@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vgram Office</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="common.css">
+<script src="config.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* Office page for the stock room (dispatch, supplier receipts, packing slips) and the admin
+   (daily report, sales upload, opening stock, close day). Needs internet. */
+'use strict';
+const $app = document.getElementById('app');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+const todayMNL = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+const fmt = (d) => d ? new Date(d).toLocaleString('en-PH', { timeZone: 'Asia/Manila', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+const num = (v) => { const n = Number(v); return isNaN(n) ? 0 : n; };
+
+const U = { pin: sessionStorage.getItem('vg.pin') || '', role: sessionStorage.getItem('vg.role') || '', name: sessionStorage.getItem('vg.name') || '',
+  tab: '', msg: null, busy: false, sr: null, cart: {}, dest: '', find: '', slip: null, rep: null, repDate: todayMNL(), sales: null, stockRows: null };
+
+async function api(body) {
+  const url = window.VGRAM_API;
+  if (!url || url.indexOf('http') !== 0) throw new Error('The app address is not set yet (web/config.js).');
+  let res;
+  try { res = await fetch(url, { method: 'POST', body: JSON.stringify(Object.assign({ pin: U.pin }, body)) }); }
+  catch (e) { throw new Error('No internet connection. Try again when connected.'); }
+  let j; try { j = await res.json(); } catch (e) { throw new Error('The server did not answer properly. Try again.'); }
+  if (!j.ok) throw new Error(j.error || 'Something went wrong.');
+  return j;
+}
+
+function msg(k, t) { U.msg = { k, t }; }
+function tabsFor() { return U.role === 'admin' ? ['dispatch', 'transfers', 'supplier', 'report', 'sales', 'opening', 'stock'] : ['dispatch', 'transfers', 'supplier']; }
+const TAB_NAME = { dispatch: 'Dispatch', transfers: 'Transfers', supplier: 'Supplier receipt', report: 'Daily report', sales: 'Upload sales', opening: 'Opening stock', stock: 'Stock lookup' };
+
+function render() {
+  if (!U.role) return login();
+  if (!U.tab) U.tab = 'dispatch';
+  const v = { dispatch: vDispatch, transfers: vTransfers, supplier: vSupplier, report: vReport, sales: vSales, opening: vOpening, stock: vStock }[U.tab]();
+  $app.innerHTML = `<div class="bar noprint"><div><b>Vgram Office</b><small>${esc(U.name)} · ${U.role === 'admin' ? 'Admin' : 'Stock room'}</small></div><button class="btn sm" id="out">Sign out</button></div>
+    <div class="wrap" style="max-width:1100px"><div class="top-tabs noprint">${tabsFor().map((t) => `<button data-t="${t}" class="${U.tab === t ? 'on' : ''}">${TAB_NAME[t]}</button>`).join('')}</div>
+    ${U.msg ? `<div class="msg ${U.msg.k} noprint">${esc(U.msg.t)}</div>` : ''}${v}</div>`;
+  document.getElementById('out').onclick = () => { sessionStorage.clear(); U.role = ''; U.pin = ''; render(); };
+  document.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { U.tab = b.dataset.t; U.msg = null; U.slip = null; enter(); });
+  bind();
+}
+
+async function enter() {
+  render();
+  try {
+    if (['dispatch', 'transfers', 'supplier', 'opening', 'stock'].includes(U.tab) && !U.sr) { U.sr = await api({ action: 'stockroom_data' }); render(); }
+    if (U.tab === 'report' && !U.rep) { await loadReport(); }
+  } catch (e) { msg('bad', e.message); render(); }
+}
+
+function login() {
+  $app.innerHTML = `<div class="bar"><b>Vgram Office</b></div><div class="wrap" style="max-width:420px"><div class="card">
+    <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
+    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}</div>`;
+  const go = async () => {
+    U.pin = document.getElementById('pin').value.trim();
+    try {
+      // the stock room data call doubles as the PIN check; admins get the same data
+      U.sr = await api({ action: 'stockroom_data' });
+      let role = 'stockroom', name = 'Stock Room';
+      try { await api({ action: 'report', date: todayMNL() }); role = 'admin'; name = 'Admin'; } catch (e) { /* not an admin */ }
+      U.role = role; U.name = name; sessionStorage.setItem('vg.pin', U.pin); sessionStorage.setItem('vg.role', role); sessionStorage.setItem('vg.name', name);
+      U.msg = null; U.tab = 'dispatch'; render();
+    } catch (e) { msg('bad', e.message); render(); }
+  };
+  document.getElementById('in').onclick = go;
+  document.getElementById('pin').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+}
+
+/* ---------------------------------------------------------- stock room -- */
+
+function slipHtml(t) {
+  const units = t.lines.reduce((s, l) => s + l.sent, 0);
+  return `<div class="card slip"><div class="row"><div><h3 style="font-size:20px">Packing slip ${esc(t.id)}</h3>
+    <div>From VGRAM DISTRIBUTION to <b>${esc(t.toName)}</b></div><div class="mut">${fmt(t.ts)} · sent by ${esc(t.user)}</div></div>
+    <button class="btn sm noprint" onclick="window.print()">Print</button></div>
+    <table style="margin-top:10px"><thead><tr><th>SKU</th><th>Item</th><th class="num">Qty sent</th><th class="num">Qty received</th></tr></thead><tbody>
+    ${t.lines.map((l) => `<tr><td>${esc(l.sku)}</td><td>${esc(l.name)}</td><td class="num">${l.sent}</td><td class="num">${l.received == null ? '' : l.received}</td></tr>`).join('')}
+    </tbody><tfoot><tr><td></td><td><b>Total</b></td><td class="num"><b>${units}</b></td><td></td></tr></tfoot></table>
+    <div class="row" style="margin-top:30px"><span>Sent by: ____________</span><span>Received by: ____________</span></div></div>`;
+}
+
+function vDispatch() {
+  if (U.slip) return `<div class="msg ok noprint">Dispatched. The stock has left VGRAM DISTRIBUTION; the branch receives it after confirming.</div>${slipHtml(U.slip)}<button class="btn noprint" id="newtrf">New transfer</button>`;
+  if (!U.sr) return '<div class="card">Loading...</div>';
+  const q = U.find.toLowerCase();
+  const items = U.sr.items.filter((i) => !q || (i.name + ' ' + i.sku + ' ' + (i.category || '')).toLowerCase().includes(q)).slice(0, 40);
+  const lines = Object.keys(U.cart).map((s) => { const it = U.sr.items.find((i) => i.sku === s); return { it, v: U.cart[s] }; });
+  const bad = lines.some((l) => !(num(l.v) > 0) || num(l.v) > l.it.available);
+  const can = U.dest && lines.length && !bad && !U.busy;
+  return `<div class="card"><h3>1. Where is it going?</h3><select id="dest"><option value="">Choose a branch</option>${U.sr.branches.map((b) => `<option value="${esc(b.code)}" ${U.dest === b.code ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>
+    <div class="card"><h3>2. What is going?</h3><input type="search" id="find" placeholder="Search by name or SKU" value="${esc(U.find)}">
+    <div style="max-height:320px;overflow:auto;margin-top:8px">${items.map((i) => `<div class="item row"><div><b>${esc(i.name)}</b><div class="mut">SKU ${esc(i.sku)} · <span style="${i.available < 20 ? 'color:var(--warn-d);font-weight:600' : ''}">${i.available} available</span></div></div>
+      <button class="btn sm ${U.cart[i.sku] != null ? '' : 'pri'}" data-add="${esc(i.sku)}" ${U.cart[i.sku] != null || i.available <= 0 ? 'disabled' : ''}>${U.cart[i.sku] != null ? 'Added' : 'Add'}</button></div>`).join('') || '<div class="mut">No match.</div>'}</div></div>
+    <div class="card"><h3>3. Check and dispatch</h3>${lines.length ? lines.map((l) => { const n = num(l.v), over = n > l.it.available; return `<div class="item row"><div><b>${esc(l.it.name)}</b><div class="mut" style="${over ? 'color:var(--bad-d);font-weight:600' : ''}">${over ? 'Only ' + l.it.available + ' available' : 'SKU ' + esc(l.it.sku)}</div></div>
+      <div><input class="q" type="number" min="1" inputmode="numeric" data-q="${esc(l.it.sku)}" value="${esc(l.v)}"> <button class="btn sm" data-rm="${esc(l.it.sku)}">Remove</button></div></div>`; }).join('') : '<div class="mut">No items yet.</div>'}
+      <div class="row" style="margin-top:10px"><span>${lines.length} lines</span><b>${lines.reduce((s, l) => s + (num(l.v) > 0 ? num(l.v) : 0), 0)} units</b></div>
+      <div style="height:10px"></div><button class="btn pri wide" id="dispatch" ${can ? '' : 'disabled'}>${U.busy ? 'Dispatching...' : 'Dispatch transfer'}</button>
+      <div class="mut" style="margin-top:6px">${!U.dest ? 'Choose a destination first.' : !lines.length ? 'Add at least one item.' : bad ? 'Fix the quantities marked in red.' : 'The stock leaves VGRAM DISTRIBUTION now.'}</div></div>`;
+}
+
+function vTransfers() {
+  if (U.slip) return slipHtml(U.slip) + '<button class="btn noprint" id="closeslip">Back to list</button>';
+  if (!U.sr) return '<div class="card">Loading...</div>';
+  return `<div class="card"><h3>Recent transfers</h3><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Sent</th><th></th></tr></thead><tbody>
+    ${U.sr.transfers.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.toName)}</td><td><span class="pill ${t.status === 'Received' ? 'ok' : t.status === 'Dispatched' ? '' : 'warn'}">${esc(t.status)}</span></td><td>${fmt(t.ts)}</td><td><button class="btn sm" data-slip="${esc(t.id)}">Packing slip</button></td></tr>`).join('') || '<tr><td colspan="5" class="mut">No transfers yet.</td></tr>'}</tbody></table></div>`;
+}
+
+function vSupplier() {
+  if (!U.sr) return '<div class="card">Loading...</div>';
+  return `<div class="card"><h3>Received from a supplier</h3><div class="mut">Adds stock to VGRAM DISTRIBUTION. Enter the quantities delivered.</div>
+    <div style="height:8px"></div><input type="search" id="sfind" placeholder="Search by name or SKU"><div id="sres" style="max-height:200px;overflow:auto"></div>
+    <div id="sl" style="margin-top:10px"></div><div style="height:8px"></div><label for="sref">Delivery receipt / note (optional)</label><input id="sref" type="text">
+    <div style="height:10px"></div><button class="btn pri wide" id="ssave">Save supplier receipt</button></div>`;
+}
+
+/* ----------------------------------------------------------------- admin - */
+
+async function loadReport() {
+  U.busy = true; render();
+  try { U.rep = await api({ action: 'report', date: U.repDate }); U.msg = null; } catch (e) { msg('bad', e.message); }
+  U.busy = false; render();
+}
+
+function vReport() {
+  const r = U.rep;
+  const head = `<div class="card noprint"><div class="row"><div><label for="rdate">Day</label><input type="date" id="rdate" value="${esc(U.repDate)}"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="rload">Refresh</button><button class="btn pri" id="rclose" ${r ? '' : 'disabled'}>Close day</button></div></div>
+    <div class="mut" style="margin-top:6px">Close day posts a correction for each difference so the system matches the count. Do it after the day's sales file is uploaded.</div></div>`;
+  if (!r) return head + `<div class="card">${U.busy ? 'Loading...' : 'No report yet.'}</div>`;
+  const k = r.kpi;
+  const pill = (s) => `<span class="pill ${s === 'Counted' || s === 'Opening count' ? 'ok' : s === 'Needs opening count' ? 'warn' : ''}">${esc(s)}</span>`;
+  return head + `<div class="tiles"><div class="tile"><span class="mut">Counts received</span><b>${k.counted} of ${k.total}</b></div>
+    <div class="tile"><span class="mut">Branches with differences</span><b style="color:var(--warn-d)">${k.withDifferences}</b></div>
+    <div class="tile"><span class="mut">Transfers in transit</span><b>${k.inTransit}</b></div>
+    <div class="tile"><span class="mut">Overdue transfers</span><b style="color:var(--bad-d)">${k.overdue}</b></div>
+    <div class="tile"><span class="mut">Sales files loaded</span><b>${k.salesLoaded} of ${k.total}</b></div></div>
+    <div class="card" style="overflow:auto"><h3>Branches</h3><table><thead><tr><th>Branch</th><th>End count</th><th class="num">Items counted</th><th class="num">Items that differ</th><th class="num">Units short</th><th class="num">Units over</th><th>Sales loaded</th><th class="num">Transfers open</th><th>Last sync</th></tr></thead><tbody>
+    ${r.branches.map((b) => `<tr><td><b>${esc(b.name)}</b></td><td>${pill(b.status)}</td><td class="num">${b.counted || '-'}</td><td class="num" style="${b.differ ? 'color:var(--bad-d);font-weight:600' : ''}">${b.counted ? b.differ : '-'}</td><td class="num">${b.counted ? b.short : '-'}</td><td class="num">${b.counted ? b.over : '-'}</td><td>${b.salesLoaded ? 'Yes' : '<span class="mut">No</span>'}</td><td class="num">${b.open}</td><td>${fmt(b.lastSync)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="card" style="overflow:auto"><h3>Items that differ</h3>${r.details.some((d) => d.provisional) ? '<div class="mut">Rows marked provisional have no sales file loaded for that branch yet, so the difference is not reliable.</div>' : ''}
+    <table><thead><tr><th>Branch</th><th>Item</th><th class="num">Counted</th><th class="num">Expected</th><th class="num">Difference</th></tr></thead><tbody>
+    ${r.details.sort((a, b) => a.diff - b.diff).map((d) => `<tr><td>${esc(d.branch)}</td><td>${esc(d.name)} <span class="mut">${esc(d.sku)}</span>${d.provisional ? ' <span class="pill warn">provisional</span>' : ''}</td><td class="num">${d.counted}</td><td class="num">${d.expected}</td><td class="num" style="font-weight:600;color:${d.diff < 0 ? 'var(--bad-d)' : 'var(--warn-d)'}">${d.diff > 0 ? '+' : ''}${d.diff}</td></tr>`).join('') || '<tr><td colspan="5" class="mut">No differences.</td></tr>'}</tbody></table></div>
+    <div class="card" style="overflow:auto"><h3>Transfers that need attention</h3><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Detail</th></tr></thead><tbody>
+    ${r.transfers.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.to)}</td><td><span class="pill ${t.status === 'Overdue' ? 'bad' : t.status === 'Difference' ? 'warn' : ''}">${esc(t.status)}</span></td><td>${esc(t.detail)}</td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing needs attention.</td></tr>'}</tbody></table></div>`;
+}
+
+/* CSV reading: handles quotes, commas inside quotes and a BOM. */
+function parseCsv(text) {
+  const rows = []; let row = [], cur = '', q = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(cur); cur = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
+    else cur += c;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter((r) => r.some((x) => x.trim() !== ''));
+}
+
+function guess(headers, re) { const i = headers.findIndex((h) => re.test(h)); return i < 0 ? '' : String(i); }
+
+function vSales() {
+  const s = U.sales;
+  const up = `<div class="card"><h3>Daily POS sales (all branches)</h3><div class="mut">Upload the sales-by-item file exported from the POS. Choose the day it covers. A day and branch that is already posted is skipped unless you tick Replace.</div>
+    <div style="height:8px"></div><div class="row" style="align-items:flex-end;flex-wrap:wrap"><div><label for="sdate">Sales date</label><input type="date" id="sdate" value="${esc(s ? s.date : todayMNL())}"></div>
+    <div><label for="sfile">File (.csv)</label><input type="file" id="sfile" accept=".csv,text/csv"></div></div></div>`;
+  if (!s) return up;
+  const h = s.rows[0];
+  const opt = (sel) => '<option value="">-</option>' + h.map((x, i) => `<option value="${i}" ${String(sel) === String(i) ? 'selected' : ''}>${esc(x)}</option>`).join('');
+  const prev = salesRows();
+  return up + `<div class="card"><h3>Check the columns</h3>
+    <label><input type="radio" name="mode" value="col" ${s.mode === 'col' ? 'checked' : ''}> One column holds the branch name</label>
+    <label><input type="radio" name="mode" value="multi" ${s.mode === 'multi' ? 'checked' : ''}> Each branch has its own column of quantities</label>
+    <div style="height:8px"></div>
+    <div class="row" style="flex-wrap:wrap;align-items:flex-end"><div style="flex:1;min-width:180px"><label>SKU column</label><select id="csku">${opt(s.sku)}</select></div>
+    ${s.mode === 'col' ? `<div style="flex:1;min-width:180px"><label>Branch column</label><select id="cbr">${opt(s.br)}</select></div><div style="flex:1;min-width:180px"><label>Quantity sold column</label><select id="cqty">${opt(s.qty)}</select></div>`
+      : '<div class="mut" style="flex:2">Columns whose title contains a branch code or name (like "Sold [V1 - Parian branch]") are used.</div>'}</div></div>
+    <div class="card"><h3>Preview</h3><div class="mut">${prev.length} sales lines found${s.name ? ' in ' + esc(s.name) : ''}.</div>
+    <table><thead><tr><th>Branch</th><th>SKU</th><th class="num">Qty</th></tr></thead><tbody>${prev.slice(0, 8).map((r) => `<tr><td>${esc(r.branch)}</td><td>${esc(r.sku)}</td><td class="num">${r.qty}</td></tr>`).join('')}</tbody></table>
+    <div style="height:10px"></div><label><input type="checkbox" id="replace"> Replace branches already posted for this date</label>
+    <div style="height:10px"></div><button class="btn pri wide" id="post" ${prev.length && !U.busy ? '' : 'disabled'}>${U.busy ? 'Posting...' : 'Post sales'}</button></div>`;
+}
+
+function salesRows() {
+  const s = U.sales, h = s.rows[0], out = [];
+  if (s.sku === '') return out;
+  for (let i = 1; i < s.rows.length; i++) {
+    const r = s.rows[i];
+    if (s.mode === 'col') { if (s.br === '' || s.qty === '') return []; const q = num(r[s.qty]); if (q) out.push({ branch: r[s.br], sku: r[s.sku], qty: q }); }
+    else h.forEach((name, j) => {
+      if (j == s.sku) return;
+      const m = name.match(/\[(.*)\]/); const label = m ? m[1] : name;
+      if (!/^(VG?\d+\b|VGRAM)/i.test(label.trim())) return;
+      const q = num(r[j]); if (q) out.push({ branch: label.trim(), sku: r[s.sku], qty: q });
+    });
+  }
+  return out;
+}
+
+function vOpening() {
+  if (!U.sr) return '<div class="card">Loading...</div>';
+  const bs = [{ code: 'DIST', name: 'VGRAM DISTRIBUTION' }].concat(U.sr.branches);
+  return `<div class="card"><h3>Opening stock</h3><div class="mut">Sets the starting stock for a place from a file with two columns: sku, qty. Use it for VGRAM DISTRIBUTION before the first dispatch. Branches normally set theirs with their first count in the app. Choose the day before the first movement you want counted.</div>
+    <div style="height:8px"></div><div class="row" style="flex-wrap:wrap;align-items:flex-end"><div style="flex:1;min-width:200px"><label>Place</label><select id="obr">${bs.map((b) => `<option value="${esc(b.code)}">${esc(b.name)}</option>`).join('')}</select></div>
+    <div><label>Opening date</label><input type="date" id="odate" value="${new Date(Date.now() - 86400000).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })}"></div>
+    <div><label>File (.csv)</label><input type="file" id="ofile" accept=".csv"></div></div>
+    <div id="oprev" class="mut" style="margin-top:8px"></div><div style="height:10px"></div><button class="btn pri wide" id="opost" disabled>Post opening stock</button></div>`;
+}
+
+function vStock() {
+  if (!U.sr) return '<div class="card">Loading...</div>';
+  const bs = [{ code: 'DIST', name: 'VGRAM DISTRIBUTION' }].concat(U.sr.branches);
+  return `<div class="card"><h3>Stock lookup</h3><div class="row" style="align-items:flex-end"><div style="flex:1"><label>Place</label><select id="skbr">${bs.map((b) => `<option value="${esc(b.code)}">${esc(b.name)}</option>`).join('')}</select></div><button class="btn" id="skgo">Show</button></div></div>
+    ${U.stockRows ? `<div class="card"><table><thead><tr><th>SKU</th><th>Item</th><th class="num">On hand</th></tr></thead><tbody>${U.stockRows.map((r) => `<tr><td>${esc(r.sku)}</td><td>${esc(r.name)}</td><td class="num" style="${r.qty < 0 ? 'color:var(--bad-d);font-weight:600' : ''}">${r.qty}</td></tr>`).join('') || '<tr><td colspan="3" class="mut">No stock recorded yet.</td></tr>'}</tbody></table></div>` : ''}`;
+}
+
+/* ----------------------------------------------------------- behaviour -- */
+
+function bind() {
+  const on = (id, fn) => { const e = document.getElementById(id); if (e) e.onclick = fn; };
+  on('newtrf', () => { U.slip = null; U.cart = {}; U.dest = ''; U.msg = null; render(); });
+  on('closeslip', () => { U.slip = null; render(); });
+  const d = document.getElementById('dest'); if (d) d.onchange = () => { U.dest = d.value; render(); };
+  const f = document.getElementById('find'); if (f) f.oninput = () => { U.find = f.value; const p = f.selectionStart; render(); const nf = document.getElementById('find'); nf.focus(); nf.setSelectionRange(p, p); };
+  document.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { const it = U.sr.items.find((i) => i.sku === b.dataset.add); U.cart[it.sku] = String(Math.min(10, it.available)); render(); });
+  document.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { delete U.cart[b.dataset.rm]; render(); });
+  document.querySelectorAll('[data-q]').forEach((i) => i.onchange = () => { U.cart[i.dataset.q] = i.value; render(); });
+  on('dispatch', async () => {
+    U.busy = true; render();
+    try {
+      const r = await api({ action: 'dispatch', id: U.cartId || (U.cartId = uuid()), dest: U.dest, lines: Object.keys(U.cart).map((s) => ({ sku: s, qty: num(U.cart[s]) })) });
+      U.slip = Object.assign({}, r.transfer, { lines: r.transfer.lines.map((l) => Object.assign({ received: null }, l)) }); U.cart = {}; U.dest = ''; U.cartId = null; U.msg = null;
+      U.sr = await api({ action: 'stockroom_data' });
+    } catch (e) { msg('bad', e.message); }
+    U.busy = false; render();
+  });
+  document.querySelectorAll('[data-slip]').forEach((b) => b.onclick = () => { const t = U.sr.transfers.find((x) => x.id === b.dataset.slip); U.slip = { id: t.id, toName: t.toName, ts: t.ts, user: t.user, lines: t.lines }; render(); });
+  supplierBind();
+  on('rload', () => { U.repDate = document.getElementById('rdate').value || todayMNL(); loadReport(); });
+  on('rclose', async () => {
+    const date = document.getElementById('rdate').value;
+    if (!confirm('Close ' + date + '? Differences become correction entries in the ledger.')) return;
+    try {
+      let r = await api({ action: 'close_day', date });
+      if (r.skippedBranches.length && confirm('No sales file for: ' + r.skippedBranches.join(', ') + '. Close those branches anyway? Their differences will include unposted sales.')) r = await api({ action: 'close_day', date, force: true });
+      msg('ok', 'Day closed. ' + r.adjustments + ' correction(s) posted.' + (r.skippedBranches.length && r.adjustments === 0 ? ' Some branches were skipped.' : ''));
+    } catch (e) { msg('bad', e.message); }
+    loadReport();
+  });
+  salesBind(); openingBind();
+  on('skgo', async () => { try { U.stockRows = (await api({ action: 'stock', branch: document.getElementById('skbr').value })).items; U.msg = null; } catch (e) { msg('bad', e.message); } render(); });
+}
+
+function supplierBind() {
+  const find = document.getElementById('sfind'); if (!find) return;
+  const lines = {};
+  const draw = () => {
+    document.getElementById('sl').innerHTML = Object.keys(lines).map((s) => { const it = U.sr.items.find((i) => i.sku === s); return `<div class="item row"><span>${esc(it.name)} <span class="mut">${esc(s)}</span></span><span><input class="q" type="number" min="1" data-sq="${esc(s)}" value="${esc(lines[s])}"> <button class="btn sm" data-sx="${esc(s)}">Remove</button></span></div>`; }).join('');
+    document.querySelectorAll('[data-sq]').forEach((i) => i.oninput = () => { lines[i.dataset.sq] = i.value; });
+    document.querySelectorAll('[data-sx]').forEach((b) => b.onclick = () => { delete lines[b.dataset.sx]; draw(); });
+  };
+  find.oninput = () => {
+    const q = find.value.toLowerCase().trim();
+    document.getElementById('sres').innerHTML = q ? U.sr.items.filter((i) => (i.name + ' ' + i.sku).toLowerCase().includes(q)).slice(0, 8).map((i) => `<div class="item row"><span>${esc(i.name)} <span class="mut">${esc(i.sku)}</span></span><button class="btn sm pri" data-sa="${esc(i.sku)}">Add</button></div>`).join('') : '';
+    document.querySelectorAll('[data-sa]').forEach((b) => b.onclick = () => { lines[b.dataset.sa] = lines[b.dataset.sa] || '1'; draw(); });
+  };
+  document.getElementById('ssave').onclick = async () => {
+    const ls = Object.keys(lines).map((s) => ({ sku: s, qty: num(lines[s]) })).filter((l) => l.qty > 0);
+    if (!ls.length) { msg('bad', 'Add at least one item.'); return render(); }
+    try { await api({ action: 'supplier_receipt', id: uuid(), lines: ls, ref: document.getElementById('sref').value }); msg('ok', 'Saved. VGRAM DISTRIBUTION stock updated.'); U.sr = await api({ action: 'stockroom_data' }); }
+    catch (e) { msg('bad', e.message); }
+    render();
+  };
+}
+
+function salesBind() {
+  const file = document.getElementById('sfile');
+  if (file) file.onchange = async () => {
+    const f = file.files[0]; if (!f) return;
+    const rows = parseCsv(await f.text());
+    if (rows.length < 2) { msg('bad', 'The file looks empty.'); return render(); }
+    const h = rows[0];
+    const multi = h.filter((x) => /\[(VG?\d+|VGRAM)/i.test(x)).length >= 2;
+    U.sales = { rows, name: f.name, date: document.getElementById('sdate').value, mode: multi ? 'multi' : 'col', sku: guess(h, /sku/i), br: guess(h, /branch|store|outlet/i), qty: guess(h, /^(qty|quantity|sold|items sold|quantity sold)/i) };
+    U.msg = null; render();
+  };
+  const sd = document.getElementById('sdate'); if (sd && U.sales) sd.onchange = () => { U.sales.date = sd.value; };
+  document.querySelectorAll('[name=mode]').forEach((r) => r.onchange = () => { U.sales.mode = r.value; render(); });
+  [['csku', 'sku'], ['cbr', 'br'], ['cqty', 'qty']].forEach(([id, k]) => { const e = document.getElementById(id); if (e) e.onchange = () => { U.sales[k] = e.value; render(); }; });
+  const post = document.getElementById('post');
+  if (post) post.onclick = async () => {
+    U.busy = true; render();
+    try {
+      const rows = salesRows();
+      const r = await api({ action: 'upload_sales', date: U.sales.date, rows, replace: document.getElementById('replace') && document.getElementById('replace').checked });
+      const parts = [`Posted ${r.posted.length} branch(es).`];
+      if (r.skipped.length) parts.push('Already posted, skipped: ' + r.skipped.join(', ') + '.');
+      if (r.replaced.length) parts.push('Replaced: ' + r.replaced.join(', ') + '.');
+      if (r.unmatchedBranches.length) parts.push('Branch not recognised: ' + r.unmatchedBranches.join(', ') + '.');
+      if (r.unknownSkus.length) parts.push(r.unknownSkus.length + ' unknown SKU(s): ' + r.unknownSkus.slice(0, 8).join(', ') + '.');
+      msg(r.unmatchedBranches.length || r.unknownSkus.length || r.skipped.length ? 'warn' : 'ok', parts.join(' ')); U.sales = null;
+    } catch (e) { msg('bad', e.message); }
+    U.busy = false; render();
+  };
+}
+
+function openingBind() {
+  const file = document.getElementById('ofile'); if (!file) return;
+  let rows = [];
+  file.onchange = async () => {
+    const t = parseCsv(await file.files[0].text()); const h = t[0].map((x) => x.trim().toLowerCase());
+    const si = h.indexOf('sku'), qi = h.indexOf('qty');
+    if (si < 0 || qi < 0) { document.getElementById('oprev').textContent = 'The file needs columns named sku and qty.'; return; }
+    rows = t.slice(1).map((r) => ({ sku: r[si].trim(), qty: num(r[qi]) })).filter((r) => r.sku);
+    document.getElementById('oprev').textContent = rows.length + ' rows ready.'; document.getElementById('opost').disabled = !rows.length;
+  };
+  document.getElementById('opost').onclick = async () => {
+    try { const r = await api({ action: 'opening_stock', branch: document.getElementById('obr').value, date: document.getElementById('odate').value, rows }); msg('ok', 'Opening stock posted: ' + r.items + ' items.'); U.sr = null; }
+    catch (e) { msg('bad', e.message); }
+    render();
+  };
+}
+
+render();
+</script>
+</body>
+</html>
