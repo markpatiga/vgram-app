@@ -159,10 +159,10 @@ function vCount() {
 function vStock() {
   const tc = todayCount();
   if (!tc) return '<div class="card"><h3>Stock</h3><div class="mut">System stock is shown after you save today\'s count, so counts stay honest.</div></div>';
-  const names = {}; S.pkg.countList.forEach((p) => { names[p.sku] = p.name; });
-  const rows = Object.keys(S.pkg.stock || {}).filter((s) => names[s]);
-  return `<div class="card"><h3>System stock as of last sync</h3><div class="mut">${fmtTime(S.lastSync)}. Count list items only.</div>
-    ${rows.length ? rows.map((s) => `<div class="item row"><span>${esc(names[s])}</span><b>${S.pkg.stock[s]}</b></div>`).join('') : '<div class="mut">No stock figures yet.</div>'}</div>`;
+  const rows = (S.pkg.stockList || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  return `<div class="card"><h3>System stock as of last sync</h3><div class="mut">${fmtTime(S.lastSync)}. Includes items received and items on the count list. Sync again to refresh.</div>
+    <div style="height:8px"></div><input type="search" id="sfind" placeholder="Find an item"></div>
+    <div class="card" id="slist">${rows.length ? rows.map((r) => `<div class="item row" data-n="${esc((r.name + ' ' + r.sku).toLowerCase())}"><span>${esc(r.name)}<div class="mut">SKU ${esc(r.sku)}</div></span><b>${r.qty}</b></div>`).join('') : '<div class="mut">No stock figures yet.</div>'}</div>`;
 }
 
 function vSync() {
@@ -192,6 +192,10 @@ function bind() {
   const cf = document.getElementById('cfind'); if (cf) cf.oninput = () => {
     const q = cf.value.trim().toLowerCase();
     document.querySelectorAll('#clist [data-n]').forEach((r) => r.classList.toggle('hide', q && r.dataset.n.indexOf(q) < 0));
+  };
+  const sf = document.getElementById('sfind'); if (sf) sf.oninput = () => {
+    const q = sf.value.trim().toLowerCase();
+    document.querySelectorAll('#slist [data-n]').forEach((r) => r.classList.toggle('hide', q && r.dataset.n.indexOf(q) < 0));
   };
   const sy = document.getElementById('sync'); if (sy) sy.onclick = doSync;
 }
