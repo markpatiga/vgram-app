@@ -1,6 +1,6 @@
 // Keeps the branch app on the phone so it opens with no signal.
 // Bump VERSION whenever files change so phones pick up the new copy on the next sync.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const FILES = ['./', './index.html', './common.css', './config.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => {
