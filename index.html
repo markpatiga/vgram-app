@@ -140,10 +140,10 @@ function vCount() {
   }
   if (!list.length) return '<div class="card">No items are on the count list. Ask the admin.</div>';
   return `<div class="card"><h3>${S.pkg.needsBaseline ? 'First count: every item' : 'End of shift count'}</h3>
-    <div class="mut">Count what is physically on the shelf and in the drawer. Enter 0 if there are none. ${list.length} items.</div>
+    <div class="mut">Count what is physically on the shelf and in the drawer. Only type a number for items you have. Items left blank are saved as 0. ${list.length} items.</div>
     <div style="height:8px"></div><input type="search" id="cfind" placeholder="Find an item"></div>
     <div class="card" id="clist">${list.map((p) => `<div class="item row" data-n="${esc((p.name + ' ' + p.sku).toLowerCase())}"><div><b>${esc(p.name)}</b><div class="mut">SKU ${esc(p.sku)}</div></div>
-      <input class="q" type="number" inputmode="numeric" min="0" data-c="${esc(p.sku)}" value="${d[p.sku] != null ? esc(d[p.sku]) : ''}"></div>`).join('')}</div>
+      <input class="q" type="number" inputmode="numeric" min="0" data-c="${esc(p.sku)}" placeholder="0" value="${d[p.sku] != null ? esc(d[p.sku]) : ''}"></div>`).join('')}</div>
     <button class="btn pri wide" id="savecount">Save count on this phone</button>`;
 }
 
@@ -199,9 +199,12 @@ function saveReceipt() {
 
 function saveCount() {
   const d = S.draft.count || {};
-  const counts = S.pkg.countList.map((p) => ({ sku: p.sku, counted: d[p.sku] }));
-  const blank = counts.filter((c) => c.counted === undefined || c.counted === '' || isNaN(Number(c.counted)) || Number(c.counted) < 0);
-  if (blank.length) { U.msg = { k: 'bad', t: blank.length + ' item(s) still need a number. Enter 0 if there are none.' }; return render(); }
+  const isBlank = (v) => v === undefined || v === null || String(v).trim() === '';
+  const counts = S.pkg.countList.map((p) => ({ sku: p.sku, counted: isBlank(d[p.sku]) ? 0 : d[p.sku], blank: isBlank(d[p.sku]) }));
+  const invalid = counts.filter((c) => isNaN(Number(c.counted)) || Number(c.counted) < 0);
+  if (invalid.length) { U.msg = { k: 'bad', t: invalid.length + ' item(s) have an invalid number. Use 0 or more.' }; return render(); }
+  const blanks = counts.filter((c) => c.blank).length;
+  if (blanks && !confirm(blanks + ' item(s) have no number and will be saved as 0. Continue?')) return;
   S.queue.push({ id: uuid(), type: 'count', ts: new Date().toISOString(), user: U.user, counts: counts.map((c) => ({ sku: c.sku, counted: Number(c.counted) })) });
   delete S.draft.count; save(); U.view = null; U.msg = { k: 'ok', t: 'Count saved on this phone.' }; render();
 }
