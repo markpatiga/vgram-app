@@ -9,6 +9,8 @@
 <script src="config.js"></script>
 </head>
 <body>
+<div class="topbar" id="topbar"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div id="app"></div>
 <script>
 /* Office page for the stock room (dispatch, supplier receipts, packing slips) and the admin
@@ -24,7 +26,28 @@ const num = (v) => { const n = Number(v); return isNaN(n) ? 0 : n; };
 const U = { pin: sessionStorage.getItem('vg.pin') || '', role: sessionStorage.getItem('vg.role') || '', name: sessionStorage.getItem('vg.name') || '',
   tab: '', msg: null, busy: false, sr: null, cart: {}, dest: '', find: '', slip: null, rep: null, repDate: todayMNL(), sales: null, stockRows: null };
 
+let inflight = 0, toastTimer = null;
+function bar(d) { inflight = Math.max(0, inflight + d); document.getElementById('topbar').classList.toggle('on', inflight > 0); }
+function toast(kind, text, ms) {
+  const t = document.getElementById('toast'); clearTimeout(toastTimer);
+  if (!kind) { t.className = 'toast'; return; }
+  t.className = 'toast show ' + kind;
+  t.innerHTML = (kind === 'work' ? '<span class="spin"></span>' : kind === 'ok' ? '<span>&#10003;</span>' : '<span>!</span>') + '<span>' + esc(text) + '</span>';
+  if (ms) toastTimer = setTimeout(() => { t.className = 'toast'; }, ms);
+}
+// Runs a save: shows "saving" right away, locks the buttons, then shows done or the error.
+async function saving(label, fn, doneText) {
+  if (U.busy) return;
+  U.busy = true; toast('work', label); render();
+  try { const r = await fn(); toast('ok', typeof doneText === 'function' ? doneText(r) : doneText, 5000); return r; }
+  catch (e) { msg('bad', e.message); toast('bad', e.message, 7000); }
+  finally { U.busy = false; render(); }
+}
 async function api(body) {
+  bar(1);
+  try { return await api_(body); } finally { bar(-1); }
+}
+async function api_(body) {
   const url = window.VGRAM_API;
   if (!url || url.indexOf('http') !== 0) throw new Error('The app address is not set yet (web/config.js).');
   let res;
@@ -65,11 +88,11 @@ function login() {
     <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}</div>`;
   const go = async () => {
     U.pin = document.getElementById('pin').value.trim();
+    const btn = document.getElementById('in'); btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';
     try {
       // the stock room data call doubles as the PIN check; admins get the same data
       U.sr = await api({ action: 'stockroom_data' });
-      let role = 'stockroom', name = 'Stock Room';
-      try { await api({ action: 'report', date: todayMNL() }); role = 'admin'; name = 'Admin'; } catch (e) { /* not an admin */ }
+      const role = U.sr.role === 'admin' ? 'admin' : 'stockroom', name = role === 'admin' ? 'Admin' : 'Stock Room';
       U.role = role; U.name = name; sessionStorage.setItem('vg.pin', U.pin); sessionStorage.setItem('vg.role', role); sessionStorage.setItem('vg.name', name);
       U.msg = null; U.tab = 'dispatch'; render();
     } catch (e) { msg('bad', e.message); render(); }
@@ -122,7 +145,7 @@ function vSupplier() {
   return `<div class="card"><h3>Received from a supplier</h3><div class="mut">Adds stock to VGRAM DISTRIBUTION. Enter the quantities delivered.</div>
     <div style="height:8px"></div><input type="search" id="sfind" placeholder="Search by name or SKU"><div id="sres" style="max-height:200px;overflow:auto"></div>
     <div id="sl" style="margin-top:10px"></div><div style="height:8px"></div><label for="sref">Delivery receipt / note (optional)</label><input id="sref" type="text">
-    <div style="height:10px"></div><button class="btn pri wide" id="ssave">Save supplier receipt</button></div>`;
+    <div style="height:10px"></div><button class="btn pri wide" id="ssave" ${U.busy ? 'disabled' : ''}>${U.busy ? 'Saving...' : 'Save supplier receipt'}</button></div>`;
 }
 
 /* ----------------------------------------------------------------- admin - */
@@ -136,7 +159,7 @@ async function loadReport() {
 function vReport() {
   const r = U.rep;
   const head = `<div class="card noprint"><div class="row"><div><label for="rdate">Day</label><input type="date" id="rdate" value="${esc(U.repDate)}"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="rload">Refresh</button><button class="btn pri" id="rclose" ${r ? '' : 'disabled'}>Close day</button></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="rload">Refresh</button><button class="btn pri" id="rclose" ${r && !U.busy ? '' : 'disabled'}>Close day</button></div></div>
     <div class="mut" style="margin-top:6px">Close day posts a correction for each difference so the system matches the count. Do it after the day's sales file is uploaded.</div></div>`;
   if (!r) return head + `<div class="card">${U.busy ? 'Loading...' : 'No report yet.'}</div>`;
   const k = r.kpi;
@@ -224,7 +247,7 @@ function vOpening() {
 function vStock() {
   if (!U.sr) return '<div class="card">Loading...</div>';
   const bs = [{ code: 'DIST', name: 'VGRAM DISTRIBUTION' }].concat(U.sr.branches);
-  return `<div class="card"><h3>Stock lookup</h3><div class="row" style="align-items:flex-end"><div style="flex:1"><label>Place</label><select id="skbr">${bs.map((b) => `<option value="${esc(b.code)}">${esc(b.name)}</option>`).join('')}</select></div><button class="btn" id="skgo">Show</button></div></div>
+  return `<div class="card"><h3>Stock lookup</h3><div class="row" style="align-items:flex-end"><div style="flex:1"><label>Place</label><select id="skbr">${bs.map((b) => `<option value="${esc(b.code)}" ${U.skbr === b.code ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div><button class="btn" id="skgo" ${U.busy ? 'disabled' : ''}>Show</button></div></div>
     ${U.stockRows ? `<div class="card"><table><thead><tr><th>SKU</th><th>Item</th><th class="num">On hand</th></tr></thead><tbody>${U.stockRows.map((r) => `<tr><td>${esc(r.sku)}</td><td>${esc(r.name)}</td><td class="num" style="${r.qty < 0 ? 'color:var(--bad-d);font-weight:600' : ''}">${r.qty}</td></tr>`).join('') || '<tr><td colspan="3" class="mut">No stock recorded yet.</td></tr>'}</tbody></table></div>` : ''}`;
 }
 
@@ -239,30 +262,29 @@ function bind() {
   document.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { const it = U.sr.items.find((i) => i.sku === b.dataset.add); U.cart[it.sku] = String(Math.min(10, it.available)); render(); });
   document.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { delete U.cart[b.dataset.rm]; render(); });
   document.querySelectorAll('[data-q]').forEach((i) => i.onchange = () => { U.cart[i.dataset.q] = i.value; render(); });
-  on('dispatch', async () => {
-    U.busy = true; render();
-    try {
-      const r = await api({ action: 'dispatch', id: U.cartId || (U.cartId = uuid()), dest: U.dest, lines: Object.keys(U.cart).map((s) => ({ sku: s, qty: num(U.cart[s]) })) });
-      U.slip = Object.assign({}, r.transfer, { lines: r.transfer.lines.map((l) => Object.assign({ received: null }, l)) }); U.cart = {}; U.dest = ''; U.cartId = null; U.msg = null;
-      U.sr = await api({ action: 'stockroom_data' });
-    } catch (e) { msg('bad', e.message); }
-    U.busy = false; render();
-  });
+  on('dispatch', () => saving('Dispatching... please wait, do not close this page', async () => {
+    const r = await api({ action: 'dispatch', id: U.cartId || (U.cartId = uuid()), dest: U.dest, lines: Object.keys(U.cart).map((s) => ({ sku: s, qty: num(U.cart[s]) })) });
+    if (r.sr) U.sr = r.sr; else U.sr = await api({ action: 'stockroom_data' });
+    if (r.duplicate || !r.transfer) { U.cart = {}; U.dest = ''; U.cartId = null; msg('ok', 'This transfer was already saved. See the Transfers tab.'); return { id: '' }; }
+    U.slip = Object.assign({}, r.transfer, { lines: r.transfer.lines.map((l) => Object.assign({ received: null }, l)) }); U.cart = {}; U.dest = ''; U.cartId = null; U.msg = null;
+    return r.transfer;
+  }, (t) => t.id ? 'Dispatched ' + t.id + '. Packing slip is ready.' : 'Already saved.'));
   document.querySelectorAll('[data-slip]').forEach((b) => b.onclick = () => { const t = U.sr.transfers.find((x) => x.id === b.dataset.slip); U.slip = { id: t.id, toName: t.toName, ts: t.ts, user: t.user, lines: t.lines }; render(); });
   supplierBind();
   on('rload', () => { U.repDate = document.getElementById('rdate').value || todayMNL(); loadReport(); });
   on('rclose', async () => {
     const date = document.getElementById('rdate').value;
     if (!confirm('Close ' + date + '? Differences become correction entries in the ledger.')) return;
-    try {
+    await saving('Closing the day... please wait', async () => {
       let r = await api({ action: 'close_day', date });
       if (r.skippedBranches.length && confirm('No sales file for: ' + r.skippedBranches.join(', ') + '. Close those branches anyway? Their differences will include unposted sales.')) r = await api({ action: 'close_day', date, force: true });
       msg('ok', 'Day closed. ' + r.adjustments + ' correction(s) posted.' + (r.skippedBranches.length && r.adjustments === 0 ? ' Some branches were skipped.' : ''));
-    } catch (e) { msg('bad', e.message); }
-    loadReport();
+      U.repDate = date; U.rep = await api({ action: 'report', date });
+      return r;
+    }, (r) => 'Day closed. ' + r.adjustments + ' correction(s) posted.');
   });
   salesBind(); openingBind();
-  on('skgo', async () => { try { U.stockRows = (await api({ action: 'stock', branch: document.getElementById('skbr').value })).items; U.msg = null; } catch (e) { msg('bad', e.message); } render(); });
+  on('skgo', async () => { const br = document.getElementById('skbr').value; U.skbr = br; await saving('Loading stock...', async () => { U.stockRows = (await api({ action: 'stock', branch: br })).items; U.msg = null; }, 'Stock loaded.'); });
 }
 
 function supplierBind() {
@@ -281,9 +303,12 @@ function supplierBind() {
   document.getElementById('ssave').onclick = async () => {
     const ls = Object.keys(lines).map((s) => ({ sku: s, qty: num(lines[s]) })).filter((l) => l.qty > 0);
     if (!ls.length) { msg('bad', 'Add at least one item.'); return render(); }
-    try { await api({ action: 'supplier_receipt', id: uuid(), lines: ls, ref: document.getElementById('sref').value }); msg('ok', 'Saved. VGRAM DISTRIBUTION stock updated.'); U.sr = await api({ action: 'stockroom_data' }); }
-    catch (e) { msg('bad', e.message); }
-    render();
+    const ref = document.getElementById('sref').value;
+    await saving('Saving supplier receipt... please wait', async () => {
+      const r = await api({ action: 'supplier_receipt', id: U.supId || (U.supId = uuid()), lines: ls, ref });
+      U.sr = r.sr ? r.sr : await api({ action: 'stockroom_data' });
+      U.supId = null; U.msg = null; msg('ok', 'Saved. VGRAM DISTRIBUTION stock updated.');
+    }, 'Supplier receipt saved. Stock room stock updated.');
   };
 }
 
@@ -303,8 +328,7 @@ function salesBind() {
   [['csku', 'sku'], ['cbr', 'br'], ['cqty', 'qty']].forEach(([id, k]) => { const e = document.getElementById(id); if (e) e.onchange = () => { U.sales[k] = e.value; render(); }; });
   const post = document.getElementById('post');
   if (post) post.onclick = async () => {
-    U.busy = true; render();
-    try {
+    await saving('Posting sales... please wait', async () => {
       const rows = salesRows();
       const r = await api({ action: 'upload_sales', date: U.sales.date, rows, replace: document.getElementById('replace') && document.getElementById('replace').checked });
       const parts = [`Posted ${r.posted.length} branch(es).`];
@@ -313,8 +337,8 @@ function salesBind() {
       if (r.unmatchedBranches.length) parts.push('Branch not recognised: ' + r.unmatchedBranches.join(', ') + '.');
       if (r.unknownSkus.length) parts.push(r.unknownSkus.length + ' unknown SKU(s): ' + r.unknownSkus.slice(0, 8).join(', ') + '.');
       msg(r.unmatchedBranches.length || r.unknownSkus.length || r.skipped.length ? 'warn' : 'ok', parts.join(' ')); U.sales = null;
-    } catch (e) { msg('bad', e.message); }
-    U.busy = false; render();
+      return r;
+    }, (r) => 'Sales posted for ' + r.posted.length + ' branch(es).');
   };
 }
 
@@ -329,9 +353,13 @@ function openingBind() {
     document.getElementById('oprev').textContent = rows.length + ' rows ready.'; document.getElementById('opost').disabled = !rows.length;
   };
   document.getElementById('opost').onclick = async () => {
-    try { const r = await api({ action: 'opening_stock', branch: document.getElementById('obr').value, date: document.getElementById('odate').value, rows }); msg('ok', 'Opening stock posted: ' + r.items + ' items.'); U.sr = null; }
-    catch (e) { msg('bad', e.message); }
-    render();
+    const branch = document.getElementById('obr').value, date = document.getElementById('odate').value;
+    await saving('Posting opening stock... please wait', async () => {
+      const r = await api({ action: 'opening_stock', branch, date, rows });
+      if (r.sr) U.sr = r.sr; else if (branch === 'DIST') U.sr = await api({ action: 'stockroom_data' });
+      U.msg = null; msg('ok', 'Opening stock posted: ' + r.items + ' items.');
+      return r;
+    }, (r) => 'Opening stock posted: ' + r.items + ' items.');
   };
 }
 

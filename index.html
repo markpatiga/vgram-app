@@ -11,6 +11,8 @@
 <script src="config.js"></script>
 </head>
 <body>
+<div class="topbar" id="topbar"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div id="app"></div>
 <script>
 /* Branch app. Works with no signal all shift: every entry is saved on this phone and
@@ -35,7 +37,20 @@ async function sha256(s) {
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+let inflight = 0, toastTimer = null;
+function bar(d) { inflight = Math.max(0, inflight + d); document.getElementById('topbar').classList.toggle('on', inflight > 0); }
+function toast(kind, text, ms) {
+  const t = document.getElementById('toast'); clearTimeout(toastTimer);
+  if (!kind) { t.className = 'toast'; return; }
+  t.className = 'toast show ' + kind;
+  t.innerHTML = (kind === 'work' ? '<span class="spin"></span>' : kind === 'ok' ? '<span>&#10003;</span>' : '<span>!</span>') + '<span>' + esc(text) + '</span>';
+  if (ms) toastTimer = setTimeout(() => { t.className = 'toast'; }, ms);
+}
 async function api(body) {
+  bar(1);
+  try { return await api_(body); } finally { bar(-1); }
+}
+async function api_(body) {
   const url = window.VGRAM_API;
   if (!url || url.indexOf('http') !== 0) throw new Error('The app address is not set yet. Ask the admin.');
   let res;
@@ -72,11 +87,11 @@ function renderSetup() {
     ${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}</div>`;
   document.getElementById('go').onclick = async (ev) => {
     const branch = document.getElementById('sb').value.trim().toUpperCase(), key = document.getElementById('sk').value.trim();
-    ev.target.disabled = true; ev.target.textContent = 'Connecting...';
+    ev.target.disabled = true; ev.target.classList.add('busy'); ev.target.textContent = 'Connecting...'; toast('work', 'Connecting to the office... please wait');
     try {
       const r = await api({ action: 'sync', branch, key, entries: [] });
-      S = { cfg: { branch, key }, pkg: r.data, queue: [], log: [], draft: {}, lastSync: r.serverTime }; save(); U.msg = null; render();
-    } catch (e) { U.msg = { k: 'bad', t: e.message }; render(); }
+      S = { cfg: { branch, key }, pkg: r.data, queue: [], log: [], draft: {}, lastSync: r.serverTime }; save(); U.msg = null; toast('ok', 'Connected. Branch data loaded.', 4000); render();
+    } catch (e) { U.msg = { k: 'bad', t: e.message }; toast('bad', e.message, 7000); render(); }
   };
 }
 
@@ -171,7 +186,7 @@ function vSync() {
     <div style="height:10px"></div>
     <div class="row"><span>Waiting to sync</span><b>${S.queue.length}</b></div>
     <div class="row"><span>Last sync</span><b>${fmtTime(S.lastSync)}</b></div>
-    <div style="height:14px"></div><button class="btn pri wide" id="sync" ${U.busy ? 'disabled' : ''}>${U.busy ? 'Syncing...' : 'Sync now'}</button></div>
+    <div style="height:14px"></div><button class="btn pri wide${U.busy ? ' busy' : ''}" id="sync" ${U.busy ? 'disabled' : ''}>${U.busy ? 'Sending...' : 'Sync now'}</button></div>
     ${U.syncMsg || ''}`;
 }
 
@@ -211,7 +226,7 @@ function saveReceipt() {
   if (!confirm(summary)) return;
   S.queue.push({ id: uuid(), type: 'receive', ts: new Date().toISOString(), user: U.user, transfer: t.id, lines });
   delete S.draft['r:' + t.id]; save();
-  U.view = null; U.msg = { k: diffs.length ? 'warn' : 'ok', t: diffs.length ? 'Receipt saved with ' + diffs.length + ' difference(s) from the packing slip. It stays listed below until the admin has it.' : 'Receipt saved on this phone.' }; render();
+  U.view = null; U.msg = { k: diffs.length ? 'warn' : 'ok', t: diffs.length ? 'Receipt saved with ' + diffs.length + ' difference(s) from the packing slip. It stays listed below until the admin has it.' : 'Receipt saved on this phone.' }; toast('ok', 'Receipt saved on this phone.', 3500); render();
 }
 
 function saveCount() {
@@ -223,12 +238,13 @@ function saveCount() {
   const blanks = counts.filter((c) => c.blank).length;
   if (blanks && !confirm(blanks + ' item(s) have no number and will be saved as 0. Continue?')) return;
   S.queue.push({ id: uuid(), type: 'count', ts: new Date().toISOString(), user: U.user, counts: counts.map((c) => ({ sku: c.sku, counted: Number(c.counted) })) });
-  delete S.draft.count; save(); U.view = null; U.msg = { k: 'ok', t: 'Count saved on this phone.' }; render();
+  delete S.draft.count; save(); U.view = null; U.msg = { k: 'ok', t: 'Count saved on this phone.' }; toast('ok', 'Count saved on this phone.', 3500); render();
 }
 
 async function doSync() {
   U.busy = true; U.syncMsg = null; render();
   const sending = S.queue.slice();
+  toast('work', sending.length ? 'Sending ' + sending.length + ' entr' + (sending.length > 1 ? 'ies' : 'y') + ' to the office... please wait' : 'Checking for new data... please wait');
   try {
     const r = await api({ action: 'sync', branch: S.cfg.branch, key: S.cfg.key, entries: sending });
     const bad = r.results.filter((x) => x.status === 'error');
@@ -242,7 +258,8 @@ async function doSync() {
     const nCnt = r.results.filter((x) => x.type === 'count' && x.status !== 'error').length;
     U.syncMsg = `<div class="msg ok"><b>Sync complete.</b><br>${nRecv} receipt(s) and ${nCnt} count(s) received.${disc.length ? ' ' + disc.length + ' receipt(s) had differences from the packing slip; the admin will follow up.' : ''}<br>Tomorrow's data is loaded.</div>` +
       (bad.length ? `<div class="msg bad">${bad.length} entr${bad.length > 1 ? 'ies were' : 'y was'} not accepted: ${esc(bad.map((b) => b.message).join('; '))}. Show this to the admin.</div>` : '');
-  } catch (e) { U.syncMsg = `<div class="msg bad">${esc(e.message)}</div>`; }
+    toast('ok', bad.length ? 'Sync finished, but ' + bad.length + ' entr' + (bad.length > 1 ? 'ies were' : 'y was') + ' not accepted.' : 'Sync complete. Everything is saved at the office.', 6000);
+  } catch (e) { U.syncMsg = `<div class="msg bad">${esc(e.message)}</div>`; toast('bad', 'Not synced. Your entries are still safe on this phone.', 7000); }
   U.busy = false; render();
 }
 
