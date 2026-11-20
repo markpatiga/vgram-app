@@ -74,7 +74,7 @@ function vLogin() {
   $app.innerHTML = `<div class="bar"><b>Vgram Mid-day Check</b></div><div class="wrap" style="max-width:420px"><div class="card">
     <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
     <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}
-    <div class="mut" style="text-align:center">Vgram Mid-day Check · v3.0 (2026-11-17)</div><div class="mut">The first sign-in each day needs internet. After you have loaded the branches you can do visits with no signal.</div></div>`;
+    <div class="mut" style="text-align:center">Vgram Mid-day Check · v3.2 (2026-11-20)</div><div class="mut">The first sign-in each day needs internet. After you have loaded the branches you can do visits with no signal.</div></div>`;
   const go = async () => {
     const pin = document.getElementById('pin').value.trim(), btn = document.getElementById('in');
     btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';

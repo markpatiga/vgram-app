@@ -85,7 +85,7 @@ async function enter() {
 function login() {
   $app.innerHTML = `<div class="bar"><b>Vgram Office</b></div><div class="wrap" style="max-width:420px"><div class="card">
     <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
-    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.0 (2026-11-17)</div></div>`;
+    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.2 (2026-11-20)</div></div>`;
   const go = async () => {
     U.pin = document.getElementById('pin').value.trim();
     const btn = document.getElementById('in'); btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';
@@ -134,13 +134,39 @@ function vDispatch() {
       <div class="mut" style="margin-top:6px">${!U.dest ? 'Choose a destination first.' : !lines.length ? 'Add at least one item.' : bad ? 'Fix the quantities marked in red.' : 'The stock leaves VGRAM DISTRIBUTION now.'}</div></div>`;
 }
 
+const TRF_STATUS = ['Dispatched', 'Partly received', 'Received', 'Received with discrepancy', 'Cancelled', 'Closed, balance cancelled'];
+function tfActive() { const f = U.tf; return !!(f && (f.q || f.branch || f.status || f.from || f.to)); }
+function allTransfers() { return U.sr.transfers.concat(U.tf && U.tf.rows ? U.tf.rows : []); }
+async function runTransferSearch(more) {
+  const f = U.tf; if (!f) return;
+  if (!tfActive()) { f.rows = null; f.total = 0; f.more = false; return render(); }
+  f.loading = true; render();
+  try {
+    const r = await api({ action: 'transfers_search', q: f.q, branch: f.branch, status: f.status, from: f.from, to: f.to, offset: more ? (f.rows || []).length : 0 });
+    f.rows = more ? (f.rows || []).concat(r.transfers) : r.transfers; f.total = r.total; f.more = r.hasMore; U.msg = null;
+  } catch (e) { msg('bad', e.message); }
+  f.loading = false; render();
+}
+function trfRow(t) {
+  return `<tr><td>${esc(t.id)}</td><td>${esc(t.toName)}</td><td><span class="pill ${t.status === 'Received' ? 'ok' : t.status === 'Dispatched' ? '' : 'warn'}">${esc(t.status)}</span>${t.deliveredBy ? '<div class="mut">by ' + esc(t.deliveredBy) + '</div>' : ''}</td><td>${fmt(t.ts)}</td><td><button class="btn sm" data-slip="${esc(t.id)}">Packing slip</button>${U.role === 'admin' && (t.status === 'Dispatched' || t.status === 'Partly received') ? ` <button class="btn sm" data-cancel="${esc(t.id)}" ${U.busy ? 'disabled' : ''}>Cancel</button>` : ''}</td></tr>`;
+}
 function vTransfers() {
   if (U.slip) return slipHtml(U.slip) + '<button class="btn noprint" id="closeslip">Back to list</button>';
   if (!U.sr) return '<div class="card">Loading...</div>';
-  return `<div class="card"><h3>Recent transfers</h3><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Sent</th><th></th></tr></thead><tbody>
-    ${U.sr.transfers.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.toName)}</td><td><span class="pill ${t.status === 'Received' ? 'ok' : t.status === 'Dispatched' ? '' : 'warn'}">${esc(t.status)}</span>${t.deliveredBy ? '<div class="mut">by ' + esc(t.deliveredBy) + '</div>' : ''}</td><td>${fmt(t.ts)}</td><td><button class="btn sm" data-slip="${esc(t.id)}">Packing slip</button>${U.role === 'admin' && (t.status === 'Dispatched' || t.status === 'Partly received') ? ` <button class="btn sm" data-cancel="${esc(t.id)}" ${U.busy ? 'disabled' : ''}>Cancel</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="mut">No transfers yet.</td></tr>'}</tbody></table></div>`;
+  const f = U.tf = U.tf || { q: '', branch: '', status: '', from: '', to: '' }, act = tfActive();
+  const list = act ? (f.rows || []) : U.sr.transfers;
+  const bar = `<div class="card noprint"><div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+    <div><label for="tq">Transfer code</label><input id="tq" type="text" placeholder="e.g. 0003 or 20261117" value="${esc(f.q)}"></div>
+    <div><label for="tb">Branch</label><select id="tb"><option value="">All branches</option>${U.sr.branches.map((b) => `<option value="${esc(b.code)}" ${f.branch === b.code ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>
+    <div><label for="ts">Status</label><select id="ts"><option value="">All statuses</option>${TRF_STATUS.map((x) => `<option ${f.status === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
+    <div><label for="tfrom">Sent from</label><input type="date" id="tfrom" value="${esc(f.from)}"></div>
+    <div><label for="tto">Sent to</label><input type="date" id="tto" value="${esc(f.to)}"></div>
+    <div style="display:flex;gap:8px"><button class="btn pri" id="tgo" ${f.loading ? 'disabled' : ''}>Search</button><button class="btn" id="tclear">Clear</button></div></div></div>`;
+  const note = act ? `${f.loading ? 'Searching...' : (f.total ? 'Showing ' + list.length + ' of ' + f.total + ' transfers that match.' : '')}` : 'Showing the latest ' + U.sr.transfers.length + ' transfers. Use the search to find older ones.';
+  return bar + `<div class="card"><h3>${act ? 'Search results' : 'Recent transfers'}</h3><div class="mut" style="margin-bottom:6px">${note}</div><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Sent</th><th></th></tr></thead><tbody>
+    ${list.map(trfRow).join('') || `<tr><td colspan="5" class="mut">${act ? (f.loading ? 'Searching...' : 'No transfers match. Change or clear the search.') : 'No transfers yet.'}</td></tr>`}</tbody></table>
+    ${act && f.more && !f.loading ? '<div style="margin-top:10px"><button class="btn" id="tmore">Show more</button></div>' : ''}</div>`;
 }
-
 function vSupplier() {
   if (!U.sr) return '<div class="card">Loading...</div>';
   return `<div class="card"><h3>Received from a supplier</h3><div class="mut">Adds stock to VGRAM DISTRIBUTION. Enter the quantities delivered.</div>
@@ -194,10 +220,19 @@ async function runDiff(body, done) {
 function vReport() {
   const r = U.rep;
   const head = `<div class="card noprint"><div class="row"><div><label for="rdate">Day</label><input type="date" id="rdate" value="${esc(U.repDate)}"></div>
+    <div><label for="rbranch">Branch</label><select id="rbranch"><option value="">All branches</option>${r ? r.branches.map((b) => `<option value="${esc(b.code)}" ${U.repBranch === b.code ? 'selected' : ''}>${esc(b.name)}</option>`).join('') : ''}</select></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="rload">Refresh</button><button class="btn pri" id="rclose" ${r && !U.busy ? '' : 'disabled'}>Close day</button></div></div>
     <div class="mut" style="margin-top:6px">Close day posts a correction for each difference so the system matches the closing count, which is tomorrow's opening stock. Review the differences first. A difference over ${r ? r.limit : 10} units must be approved before it can be posted. Do it after the day's sales file is uploaded.</div></div>`;
   if (!r) return head + `<div class="card">${U.busy ? 'Loading...' : 'No report yet.'}</div>`;
-  const k = r.kpi;
+  const bc = U.repBranch && r.branches.some((x) => x.code === U.repBranch) ? U.repBranch : '', bsel = r.branches.find((x) => x.code === bc);
+  const OPEN = { 'Open': 1, 'Recount requested': 1, 'Recounted': 1, 'Reviewed': 1, 'Approved': 1 };
+  const by = (l) => (bc ? (l || []).filter((d) => d.branch === bc) : (l || []));
+  const brs = bc ? r.branches.filter((x) => x.code === bc) : r.branches;
+  const dts = by(r.details), earlier = by(r.earlierOpen), tdf = by(r.transferDiffs), mdf = by(r.middayDiffs), att = bc ? r.transfers.filter((t) => t.toCode === bc) : r.transfers;
+  const k = bc ? { counted: brs.filter((x) => x.status === 'Counted' || x.status === 'Opening count').length, total: brs.length, withDifferences: brs.filter((x) => x.differ > 0).length,
+    openDifferences: dts.filter((d) => OPEN[d.status]).length + tdf.filter((d) => OPEN[d.status]).length + mdf.filter((d) => OPEN[d.status]).length + earlier.length,
+    inTransit: att.filter((t) => t.status === 'In transit').length, overdue: att.filter((t) => t.status === 'Overdue').length, salesLoaded: brs.filter((x) => x.salesLoaded).length, middayChecked: brs.filter((x) => x.midday).length } : r.kpi;
+  const sub = bc ? ` <span class="pill">${esc(bsel.name)}</span>` : '';
   const pill = (s) => `<span class="pill ${s === 'Counted' || s === 'Opening count' ? 'ok' : s === 'Needs opening stock' ? 'warn' : ''}">${esc(s)}</span>`;
   return head + `<div class="tiles"><div class="tile"><span class="mut">Counts received</span><b>${k.counted} of ${k.total}</b></div>
     <div class="tile"><span class="mut">Branches with differences</span><b style="color:var(--warn-d)">${k.withDifferences}</b></div>
@@ -206,18 +241,18 @@ function vReport() {
     <div class="tile"><span class="mut">Overdue transfers</span><b style="color:var(--bad-d)">${k.overdue}</b></div>
     <div class="tile"><span class="mut">Sales files loaded</span><b>${k.salesLoaded} of ${k.total}</b></div>
     <div class="tile"><span class="mut">Checked mid-day</span><b>${k.middayChecked} of ${k.total}</b></div></div>
-    <div class="card" style="overflow:auto"><h3>Branches</h3><table><thead><tr><th>Branch</th><th>End count</th><th>Opening from</th><th class="num">Items counted</th><th class="num">Items that differ</th><th class="num">Units short</th><th class="num">Units over</th><th>Sales loaded</th><th class="num">Transfers open</th><th>Mid-day check</th><th>Last sync</th></tr></thead><tbody>
-    ${r.branches.map((b) => `<tr><td><b>${esc(b.name)}</b></td><td>${pill(b.status)}</td><td>${b.openingFrom ? esc(b.openingFrom) + '<div class="mut">' + esc(b.openingSource) + '</div>' : '<span class="mut">-</span>'}</td><td class="num">${b.counted || '-'}</td><td class="num" style="${b.differ ? 'color:var(--bad-d);font-weight:600' : ''}">${b.counted ? b.differ : '-'}</td><td class="num">${b.counted ? b.short : '-'}</td><td class="num">${b.counted ? b.over : '-'}</td><td>${b.salesLoaded ? 'Yes' : '<span class="mut">No</span>'}</td><td class="num">${b.open}</td><td>${b.midday ? `<span class="pill ${b.midday.differ ? 'bad' : 'ok'}">${b.midday.differ ? b.midday.differ + ' differ' : 'Matched'}</span><div class="mut">${b.midday.items} item(s)${b.midday.differ ? ', ' + b.midday.short + ' short, ' + b.midday.over + ' over' : ''} · ${esc(b.midday.by)} ${fmt(b.midday.last)}</div>` : '<span class="mut">Not checked</span>'}</td><td>${fmt(b.lastSync)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="card" style="overflow:auto"><h3>Branches${sub}</h3><table><thead><tr><th>Branch</th><th>End count</th><th>Opening from</th><th class="num">Items counted</th><th class="num">Items that differ</th><th class="num">Units short</th><th class="num">Units over</th><th>Sales loaded</th><th class="num">Transfers open</th><th>Mid-day check</th><th>Last sync</th></tr></thead><tbody>
+    ${brs.map((b) => `<tr><td><b>${esc(b.name)}</b></td><td>${pill(b.status)}</td><td>${b.openingFrom ? esc(b.openingFrom) + '<div class="mut">' + esc(b.openingSource) + '</div>' : '<span class="mut">-</span>'}</td><td class="num">${b.counted || '-'}</td><td class="num" style="${b.differ ? 'color:var(--bad-d);font-weight:600' : ''}">${b.counted ? b.differ : '-'}</td><td class="num">${b.counted ? b.short : '-'}</td><td class="num">${b.counted ? b.over : '-'}</td><td>${b.salesLoaded ? 'Yes' : '<span class="mut">No</span>'}</td><td class="num">${b.open}</td><td>${b.midday ? `<span class="pill ${b.midday.differ ? 'bad' : 'ok'}">${b.midday.differ ? b.midday.differ + ' differ' : 'Matched'}</span><div class="mut">${b.midday.items} item(s)${b.midday.differ ? ', ' + b.midday.short + ' short, ' + b.midday.over + ' over' : ''} · ${esc(b.midday.by)} ${fmt(b.midday.last)}</div>` : '<span class="mut">Not checked</span>'}</td><td>${fmt(b.lastSync)}</td></tr>`).join('')}</tbody></table></div>
     ${vDiffForm(r)}
-    <div class="card" style="overflow:auto"><h3>Count differences for ${esc(r.date)}</h3>${r.details.some((d) => d.provisional) ? '<div class="mut">Rows marked provisional have no sales file loaded for that branch yet, so the difference is not reliable.</div>' : ''}
-    ${diffTable(r.details.slice().sort((a, b) => a.diff - b.diff), 'No differences.')}</div>
-    ${r.earlierOpen && r.earlierOpen.length ? `<div class="card" style="overflow:auto;border:2px solid var(--bad-d)"><h3>Still open from earlier days</h3><div class="mut">These were not settled on their own day.</div>${diffTable(r.earlierOpen, '')}</div>` : ''}
-    <div class="card" style="overflow:auto"><h3>Transfer differences</h3><div class="mut">Quantities received that did not match the packing slip. The branch gave the first reason.</div>
-    ${diffTable(r.transferDiffs, 'No transfer differences.')}</div>
-    <div class="card" style="overflow:auto"><h3>Mid-day check differences</h3><div class="mut">Found by the checker during the day: counted compared with opening + received - sold.</div>
-    ${diffTable(r.middayDiffs || [], 'No mid-day differences.')}</div>
-    <div class="card" style="overflow:auto"><h3>Transfers that need attention</h3><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Detail</th></tr></thead><tbody>
-    ${r.transfers.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.to)}</td><td><span class="pill ${t.status === 'Overdue' ? 'bad' : t.status === 'Difference' ? 'warn' : ''}">${esc(t.status)}</span></td><td>${esc(t.detail)}</td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing needs attention.</td></tr>'}</tbody></table></div>`;
+    <div class="card" style="overflow:auto"><h3>Count differences for ${esc(r.date)}${sub}</h3>${dts.some((d) => d.provisional) ? '<div class="mut">Rows marked provisional have no sales file loaded for that branch yet, so the difference is not reliable.</div>' : ''}
+    ${diffTable(dts.slice().sort((a, b) => a.diff - b.diff), 'No differences.')}</div>
+    ${earlier.length ? `<div class="card" style="overflow:auto;border:2px solid var(--bad-d)"><h3>Still open from earlier days</h3><div class="mut">These were not settled on their own day.</div>${diffTable(earlier, '')}</div>` : ''}
+    <div class="card" style="overflow:auto"><h3>Transfer differences${sub}</h3><div class="mut">Quantities received that did not match the packing slip. The branch gave the first reason.</div>
+    ${diffTable(tdf, 'No transfer differences.')}</div>
+    <div class="card" style="overflow:auto"><h3>Mid-day check differences${sub}</h3><div class="mut">Found by the checker during the day: counted compared with opening + received - sold.</div>
+    ${diffTable(mdf, 'No mid-day differences.')}</div>
+    <div class="card" style="overflow:auto"><h3>Transfers that need attention${sub}</h3><table><thead><tr><th>Transfer</th><th>To</th><th>Status</th><th>Detail</th></tr></thead><tbody>
+    ${att.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.to)}</td><td><span class="pill ${t.status === 'Overdue' ? 'bad' : t.status === 'Difference' ? 'warn' : ''}">${esc(t.status)}</span></td><td>${esc(t.detail)}</td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing needs attention.</td></tr>'}</tbody></table></div>`;
 }
 
 /* CSV reading: handles quotes, commas inside quotes and a BOM. */
@@ -299,6 +334,7 @@ function bind() {
   const on = (id, fn) => { const e = document.getElementById(id); if (e) e.onclick = fn; };
   on('newtrf', () => { U.slip = null; U.cart = {}; U.dest = ''; U.deliveredBy = ''; U.msg = null; render(); });
   on('closeslip', () => { U.slip = null; render(); });
+  const rb = document.getElementById('rbranch'); if (rb) rb.onchange = () => { U.repBranch = rb.value; render(); };
   const dby = document.getElementById('dby'); if (dby) dby.oninput = () => { U.deliveredBy = dby.value; };
   const d = document.getElementById('dest'); if (d) d.onchange = () => { U.dest = d.value; render(); };
   const f = document.getElementById('find'); if (f) f.oninput = () => { U.find = f.value; const p = f.selectionStart; render(); const nf = document.getElementById('find'); nf.focus(); nf.setSelectionRange(p, p); };
@@ -318,10 +354,18 @@ function bind() {
     if (!why.trim()) { msg('bad', 'Give a reason to cancel the transfer.'); return render(); }
     saving('Cancelling... please wait', async () => {
       const r = await api({ action: 'cancel_transfer', id, reason: why.trim() });
-      U.sr = r.sr; U.msg = null; msg('ok', 'Transfer ' + id + ' cancelled. ' + r.returned + ' line(s) returned to VGRAM DISTRIBUTION.');
+      U.sr = r.sr; U.msg = null; if (tfActive()) await runTransferSearch(false); msg('ok', 'Transfer ' + id + ' cancelled. ' + r.returned + ' line(s) returned to VGRAM DISTRIBUTION.');
     }, 'Transfer cancelled. Stock returned to the stock room.');
   });
-  document.querySelectorAll('[data-slip]').forEach((b) => b.onclick = () => { const t = U.sr.transfers.find((x) => x.id === b.dataset.slip); U.slip = { id: t.id, toName: t.toName, ts: t.ts, user: t.user, deliveredBy: t.deliveredBy, lines: t.lines }; render(); });
+  const tf = U.tf;
+  if (tf && document.getElementById('tgo')) {
+    const go = () => { tf.q = document.getElementById('tq').value.trim(); tf.branch = document.getElementById('tb').value; tf.status = document.getElementById('ts').value; tf.from = document.getElementById('tfrom').value; tf.to = document.getElementById('tto').value; runTransferSearch(false); };
+    on('tgo', go); on('tmore', () => runTransferSearch(true));
+    on('tclear', () => { U.tf = { q: '', branch: '', status: '', from: '', to: '' }; render(); });
+    document.getElementById('tq').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    ['tb', 'ts', 'tfrom', 'tto'].forEach((i) => document.getElementById(i).onchange = go);
+  }
+  document.querySelectorAll('[data-slip]').forEach((b) => b.onclick = () => { const t = allTransfers().find((x) => x.id === b.dataset.slip); U.slip = { id: t.id, toName: t.toName, ts: t.ts, user: t.user, deliveredBy: t.deliveredBy, lines: t.lines }; render(); });
   supplierBind();
   document.querySelectorAll('[data-da]').forEach((b) => b.onclick = () => {
     if (b.dataset.da === 'recount') return runDiff({ id: b.dataset.id, do: 'recount' }, 'Recount requested.');
@@ -400,7 +444,7 @@ function salesBind() {
     if (rows.length < 2) { msg('bad', 'The file looks empty.'); return render(); }
     const h = rows[0];
     const multi = h.filter((x) => /\[(VG?\d+|VGRAM)/i.test(x)).length >= 2;
-    U.sales = { rows, name: f.name, date: document.getElementById('sdate').value, mode: multi ? 'multi' : 'col', sku: guess(h, /sku/i), br: guess(h, /branch|store|outlet/i), qty: guess(h, /^(qty|quantity|sold|items sold|quantity sold)/i) };
+    U.sales = { rows, name: f.name, date: document.getElementById('sdate').value, mode: multi ? 'multi' : 'col', sku: guess(h, /sku/i), br: guess(h, /branch|store|outlet|^pos$/i), qty: guess(h, /^(qty|quantity|sold|items sold|quantity sold)/i) };
     U.msg = null; render();
   };
   const sd = document.getElementById('sdate'); if (sd && U.sales) sd.onchange = () => { U.sales.date = sd.value; };
