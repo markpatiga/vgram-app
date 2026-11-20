@@ -85,7 +85,7 @@ async function enter() {
 function login() {
   $app.innerHTML = `<div class="bar"><b>Vgram Office</b></div><div class="wrap" style="max-width:420px"><div class="card">
     <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
-    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.2 (2026-11-20)</div></div>`;
+    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.3 (2026-11-20)</div></div>`;
   const go = async () => {
     U.pin = document.getElementById('pin').value.trim();
     const btn = document.getElementById('in'); btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';
@@ -325,7 +325,9 @@ function vStock() {
   if (!U.sr) return '<div class="card">Loading...</div>';
   const bs = [{ code: 'DIST', name: 'VGRAM DISTRIBUTION' }].concat(U.sr.branches);
   return `<div class="card"><h3>Stock lookup</h3><div class="row" style="align-items:flex-end"><div style="flex:1"><label>Place</label><select id="skbr">${bs.map((b) => `<option value="${esc(b.code)}" ${U.skbr === b.code ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div><button class="btn" id="skgo" ${U.busy ? 'disabled' : ''}>Show</button></div></div>
-    ${U.stockRows ? `<div class="card"><table><thead><tr><th>SKU</th><th>Item</th><th class="num">On hand</th></tr></thead><tbody>${U.stockRows.map((r) => `<tr><td>${esc(r.sku)}</td><td>${esc(r.name)}</td><td class="num" style="${r.qty < 0 ? 'color:var(--bad-d);font-weight:600' : ''}">${r.qty}</td></tr>`).join('') || '<tr><td colspan="3" class="mut">No stock recorded yet.</td></tr>'}</tbody></table></div>` : ''}`;
+    ${U.stockRows ? `<div class="card"><div class="row" style="align-items:flex-end;margin-bottom:8px"><div style="flex:1"><label for="skq">Search item name or SKU</label><input id="skq" type="search" placeholder="e.g. vista or 10141" value="${esc(U.skq || '')}" autocomplete="off"></div><button class="btn" id="skclear">Clear</button></div>
+      <div class="mut" id="skcount" style="margin-bottom:6px"></div>
+      <table><thead><tr><th>SKU</th><th>Item</th><th class="num">On hand</th></tr></thead><tbody id="skbody">${U.stockRows.map((r) => `<tr data-n="${esc((r.sku + ' ' + r.name).toLowerCase())}"><td>${esc(r.sku)}</td><td>${esc(r.name)}</td><td class="num" style="${r.qty < 0 ? 'color:var(--bad-d);font-weight:600' : ''}">${r.qty}</td></tr>`).join('') || '<tr><td colspan="3" class="mut">No stock recorded yet.</td></tr>'}<tr id="sknone" class="hide"><td colspan="3" class="mut">No item matches. Check the spelling or clear the search.</td></tr></tbody></table></div>` : ''}`;
 }
 
 /* ----------------------------------------------------------- behaviour -- */
@@ -408,7 +410,18 @@ function bind() {
     }, (r) => r.cancelled ? 'Cancelled. Nothing was posted.' : 'Day closed. ' + r.adjustments + ' correction(s) posted.' + (r.held && r.held.length ? ' ' + r.held.length + ' held for approval.' : ''));
   });
   salesBind(); openingBind();
-  on('skgo', async () => { const br = document.getElementById('skbr').value; U.skbr = br; await saving('Loading stock...', async () => { U.stockRows = (await api({ action: 'stock', branch: br })).items; U.msg = null; }, 'Stock loaded.'); });
+  const skq = document.getElementById('skq');
+  if (skq) {
+    const apply = () => {
+      U.skq = skq.value; const words = skq.value.trim().toLowerCase().split(/\s+/).filter(Boolean); let shown = 0, total = 0;
+      document.querySelectorAll('#skbody tr[data-n]').forEach((r) => { total++; const ok = words.every((w) => r.dataset.n.indexOf(w) >= 0); r.classList.toggle('hide', !ok); if (ok) shown++; });
+      document.getElementById('skcount').textContent = words.length ? shown + ' of ' + total + ' items match' : total + ' items';
+      document.getElementById('sknone').classList.toggle('hide', !(words.length && !shown));
+    };
+    skq.oninput = apply; apply();
+    on('skclear', () => { skq.value = ''; apply(); skq.focus(); });
+  }
+  on('skgo', async () => { const br = document.getElementById('skbr').value; U.skbr = br; U.skq = ''; await saving('Loading stock...', async () => { U.stockRows = (await api({ action: 'stock', branch: br })).items; U.msg = null; }, 'Stock loaded.'); });
 }
 
 function supplierBind() {
