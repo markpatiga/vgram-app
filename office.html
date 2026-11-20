@@ -85,7 +85,7 @@ async function enter() {
 function login() {
   $app.innerHTML = `<div class="bar"><b>Vgram Office</b></div><div class="wrap" style="max-width:420px"><div class="card">
     <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
-    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.3 (2026-11-20)</div></div>`;
+    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.4 (2026-11-21)</div></div>`;
   const go = async () => {
     U.pin = document.getElementById('pin').value.trim();
     const btn = document.getElementById('in'); btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';
@@ -465,8 +465,10 @@ function salesBind() {
   [['csku', 'sku'], ['cbr', 'br'], ['cqty', 'qty']].forEach(([id, k]) => { const e = document.getElementById(id); if (e) e.onchange = () => { U.sales[k] = e.value; render(); }; });
   const post = document.getElementById('post');
   if (post) post.onclick = async () => {
+    // read the tick box BEFORE saving() redraws the page (a redraw puts it back to unticked)
+    const replace = !!(document.getElementById('replace') && document.getElementById('replace').checked);
     await saving('Posting sales... please wait', async () => {
-      const rows = salesRows(), replace = document.getElementById('replace') && document.getElementById('replace').checked, fileDates = salesFileDates();
+      const rows = salesRows(), fileDates = salesFileDates();
       let r = await api({ action: 'upload_sales', date: U.sales.date, rows, replace, fileDates });
       if (r.needsConfirm) {
         if (!confirm('Check before posting:\n\n- ' + r.warnings.map((w) => w.text).join('\n- ') + '\n\nPost anyway?')) { msg('warn', 'Not posted. Choose the right file or date and try again.'); return { posted: [], skipped: [], replaced: [], unmatchedBranches: [], unknownSkus: [], cancelled: true }; }
