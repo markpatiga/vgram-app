@@ -85,7 +85,7 @@ async function enter() {
 function login() {
   $app.innerHTML = `<div class="bar"><b>Vgram Office</b></div><div class="wrap" style="max-width:420px"><div class="card">
     <label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off"><div style="height:14px"></div>
-    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.4 (2026-11-21)</div></div>`;
+    <button class="btn pri wide" id="in">Sign in</button></div>${U.msg ? `<div class="msg ${U.msg.k}">${esc(U.msg.t)}</div>` : ''}<div class="mut" style="text-align:center;margin-top:10px">Vgram Office · v3.5 (2026-11-21)</div></div>`;
   const go = async () => {
     U.pin = document.getElementById('pin').value.trim();
     const btn = document.getElementById('in'); btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Signing in...';
@@ -234,13 +234,20 @@ function vReport() {
     inTransit: att.filter((t) => t.status === 'In transit').length, overdue: att.filter((t) => t.status === 'Overdue').length, salesLoaded: brs.filter((x) => x.salesLoaded).length, middayChecked: brs.filter((x) => x.midday).length } : r.kpi;
   const sub = bc ? ` <span class="pill">${esc(bsel.name)}</span>` : '';
   const pill = (s) => `<span class="pill ${s === 'Counted' || s === 'Opening count' ? 'ok' : s === 'Needs opening stock' ? 'warn' : ''}">${esc(s)}</span>`;
-  return head + `<div class="tiles"><div class="tile"><span class="mut">Counts received</span><b>${k.counted} of ${k.total}</b></div>
+  const sec = r.security || {}, secMsg = [];
+  if ((sec.defaultPinUsers || []).length) secMsg.push('These users still have a default PIN from setup: ' + sec.defaultPinUsers.join(', ') + '. Change their PINs in the Users tab before going live.');
+  if (sec.wrongPins24h) secMsg.push(sec.wrongPins24h + ' wrong PIN' + (sec.wrongPins24h === 1 ? '' : 's') + ' typed in the last 24 hours (see the AuthLog tab).');
+  const secBox = secMsg.length ? `<div class="msg bad noprint" id="secwarn"><b>Security:</b> ${secMsg.map(esc).join(' ')}</div>` : '';
+  const ucl = r.unclosedDays || [];
+  const uclBox = ucl.length ? `<div class="msg warn noprint" id="unclosed"><b>Close day not done:</b> ${ucl.map((d) => esc(d.date) + ' (' + d.branches.map(esc).join(', ') + ')').join('; ')}. Choose the day above, review the differences, then press Close day. Branch stock is not corrected until you do.</div>` : '';
+  return head + secBox + uclBox + `<div class="tiles"><div class="tile"><span class="mut">Counts received</span><b>${k.counted} of ${k.total}</b></div>
     <div class="tile"><span class="mut">Branches with differences</span><b style="color:var(--warn-d)">${k.withDifferences}</b></div>
     <div class="tile"><span class="mut">Open differences</span><b style="color:${k.openDifferences ? 'var(--bad-d)' : 'inherit'}">${k.openDifferences}</b></div>
     <div class="tile"><span class="mut">Transfers in transit</span><b>${k.inTransit}</b></div>
     <div class="tile"><span class="mut">Overdue transfers</span><b style="color:var(--bad-d)">${k.overdue}</b></div>
     <div class="tile"><span class="mut">Sales files loaded</span><b>${k.salesLoaded} of ${k.total}</b></div>
-    <div class="tile"><span class="mut">Checked mid-day</span><b>${k.middayChecked} of ${k.total}</b></div></div>
+    <div class="tile"><span class="mut">Checked mid-day</span><b>${k.middayChecked} of ${k.total}</b></div>
+    <div class="tile"><span class="mut">Days not closed</span><b id="ucount" style="color:${ucl.length ? 'var(--bad-d)' : 'inherit'}">${ucl.length}</b></div></div>
     <div class="card" style="overflow:auto"><h3>Branches${sub}</h3><table><thead><tr><th>Branch</th><th>End count</th><th>Opening from</th><th class="num">Items counted</th><th class="num">Items that differ</th><th class="num">Units short</th><th class="num">Units over</th><th>Sales loaded</th><th class="num">Transfers open</th><th>Mid-day check</th><th>Last sync</th></tr></thead><tbody>
     ${brs.map((b) => `<tr><td><b>${esc(b.name)}</b></td><td>${pill(b.status)}</td><td>${b.openingFrom ? esc(b.openingFrom) + '<div class="mut">' + esc(b.openingSource) + '</div>' : '<span class="mut">-</span>'}</td><td class="num">${b.counted || '-'}</td><td class="num" style="${b.differ ? 'color:var(--bad-d);font-weight:600' : ''}">${b.counted ? b.differ : '-'}</td><td class="num">${b.counted ? b.short : '-'}</td><td class="num">${b.counted ? b.over : '-'}</td><td>${b.salesLoaded ? 'Yes' : '<span class="mut">No</span>'}</td><td class="num">${b.open}</td><td>${b.midday ? `<span class="pill ${b.midday.differ ? 'bad' : 'ok'}">${b.midday.differ ? b.midday.differ + ' differ' : 'Matched'}</span><div class="mut">${b.midday.items} item(s)${b.midday.differ ? ', ' + b.midday.short + ' short, ' + b.midday.over + ' over' : ''} · ${esc(b.midday.by)} ${fmt(b.midday.last)}</div>` : '<span class="mut">Not checked</span>'}</td><td>${fmt(b.lastSync)}</td></tr>`).join('')}</tbody></table></div>
     ${vDiffForm(r)}
